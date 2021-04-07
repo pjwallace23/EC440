@@ -7,6 +7,7 @@
 #include <setjmp.h>
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
 
 // set up a sigalarm: include unistd.h, set up a timer based on the interval (50 ms)
 // what sends the signal is U_ALARM --> SA_NODIFFER
@@ -38,12 +39,15 @@ enum thread_status
 	TS_EXITED,
 	TS_RUNNING,
 	TS_READY,
-	TS_DORMENT
+	TS_DORMENT,
+	TS_BLOCKED,
 };
 
 /* The thread control block stores information about a thread. You will
  * need one of this per thread.
  */
+static void schedule(int signal);
+static void scheduler_init();
 struct thread_control_block {
 	/* TODO: add a thread ID */
 	pthread_t pthread_id;
@@ -57,10 +61,196 @@ struct thread_control_block {
 	/* Add other information you need to manage this thread */
 };
 
+struct mutex {
+	int counter;
+	int initialized;
+	int lock;
+	pthread_t lock_id;
+};
+
+struct barrier {
+
+	int barrier_limit;
+	int barrier_count;
+	struct thread_control_block *thread_array[MAX_THREADS];
+
+};
+
 	static struct thread_control_block TCB[MAX_THREADS];
 	static int thread_count = 0;
 	static int current_thread = 0;
-	static int pthread_id_next = 1;
+	static bool serial_barrier = false;
+	static bool is_first_call = true;
+	//static int pthread_id_next = 1;
+
+
+static void lock()
+{
+	sigset_t sigs;
+	sigemptyset(&sigs);
+	sigaddset(&sigs, SIGALRM);
+	sigprocmask(SIG_BLOCK, &sigs, NULL);
+}
+
+static void unlock()
+{
+	sigset_t sigs;
+	sigemptyset(&sigs);
+	sigaddset(&sigs, SIGALRM);
+	sigprocmask(SIG_BLOCK, &sigs, NULL);
+}
+
+// pthread_mutex_init() from homework 3
+int pthread_mutex_init(
+		pthread_mutex_t *restrict mutex,
+		const pthread_mutexattr_t *restrict attr)
+{
+		struct mutex *new_mutex = malloc(sizeof(struct mutex));
+		new_mutex->counter = 1;
+		new_mutex->initialized = 1;
+		new_mutex->lock = 0;
+		mutex->__align = (long int)new_mutex;
+		printf("initialized\n");
+		return 0;
+}
+// pthread_mutex_destroy() from homework 3
+int pthread_mutex_destroy(
+	pthread_mutex_t *restrict mutex)
+{
+	struct mutex *current_mutex = (struct mutex *)mutex->__align;	
+	memset(current_mutex, 0, sizeof(struct mutex));
+	//free(current_mutex);
+	printf("destroyed\n");
+	return 0;
+}
+
+// pthred_mutex_lock() function from hw3
+int pthread_mutex_lock(
+	pthread_mutex_t *mutex)
+{
+	lock();
+	struct mutex *current_mutex = (struct mutex *)mutex->__align;
+	if (current_mutex->lock == 0)
+	{
+		printf("in mutex first section\n");
+		if (is_first_call)
+		{
+			is_first_call = false;
+			scheduler_init();
+		}
+		current_mutex->lock_id = TCB[current_thread].pthread_id;
+		current_mutex->lock = 1;
+		unlock();
+	}
+	else if (current_mutex->lock == 1)
+	{
+		printf("in block section\n");
+		if (is_first_call)
+		{
+			is_first_call = false;
+			scheduler_init();
+		}
+		TCB[current_thread].status = TS_BLOCKED;
+		printf("current thread blocked\n");
+	}
+	unlock();
+	//printf("locked\n");
+	return 0;
+}
+
+//pthread_mutex_unlock() function from hw3
+int pthread_mutex_unlock(
+	pthread_mutex_t *mutex
+)
+{
+	lock();
+	struct mutex *current_mutex = (struct mutex *)mutex->__align;
+	
+	//current_mutex->lock = 0;
+	int i;
+	bool check = false;
+	for (i = 0; i<MAX_THREADS; i++)
+	{
+		if (TCB[i].status == TS_BLOCKED)
+		{
+			TCB[i].status = TS_READY;
+			current_mutex->lock_id = TCB[i].pthread_id;
+			current_mutex->lock = 1;
+			unlock();
+			check = true;
+			break;
+		}
+	}
+	if (!check) current_mutex->lock = 0;
+	printf("unlock()");
+	return 0;
+}
+
+//pthread_barrier_init function from hw3
+int pthread_barrier_init(
+	pthread_barrier_t *restrict barrier,
+	const pthread_barrierattr_t *restrict attr,
+	unsigned count)
+{
+	if (count == 0)
+	{
+		return EINVAL;
+	}
+	else
+	{
+		struct barrier *new_barrier = malloc(sizeof(struct barrier));
+		new_barrier->barrier_limit = (int)count;
+		new_barrier->barrier_count = 0;
+		barrier->__align = (long int)new_barrier;
+		return 0;
+	}
+}
+
+//pthread_barrier_destroy function from hw3
+int pthread_barrier_destroy(
+	pthread_barrier_t *barrier)
+{
+	struct barrier *current_barrier = (struct barrier *)barrier->__align;
+	memset(current_barrier, 0, sizeof(struct barrier));
+	return 0;
+}
+
+//pthread_barrier_wait function from hw3
+int pthread_barrier_wait(
+	pthread_barrier_t *barrier)
+{
+	lock();
+	//bool returnval = false;
+	struct barrier *current_barrier = (struct barrier *)barrier->__align;
+	TCB[current_thread].status = TS_BLOCKED;
+	current_barrier->thread_array[current_barrier->barrier_count] = &TCB[current_thread];
+	current_barrier->barrier_count++;
+	if (current_barrier->barrier_count < current_barrier->barrier_limit)
+	{
+		unlock();
+		schedule(1);
+	}
+	else
+	{
+		int count = current_barrier->barrier_count;
+		// reset the barrier after threads exit
+		for (int i = 0; i < count; i++)
+		{
+			current_barrier->thread_array[i]->status = TS_READY;
+			current_barrier->thread_array[i] = NULL;
+			break;
+		}
+	}
+
+	current_barrier->barrier_count = 0;
+	unlock();
+		if (!serial_barrier)
+		{
+			serial_barrier = true;
+			return PTHREAD_BARRIER_SERIAL_THREAD;
+		}
+		else return 0;
+}
 
 static void schedule(int signal)
 {
@@ -72,7 +262,6 @@ static void schedule(int signal)
 	 */
 
 	//printf("schedule 1\n");
-
 	if (setjmp(TCB[current_thread].thread_registers) == 0)
 	{ 
 		int index;
@@ -89,6 +278,7 @@ static void schedule(int signal)
 		//printf("longjmp occured");
 		//TCB[current_thread].status = TS_RUNNING;
 	}
+	//unlock();
 }
 
 static void scheduler_init()
@@ -155,13 +345,14 @@ int pthread_create( // to ask: how do we modify registers? e.g., how do I get ar
 		return 0;
 	}
 
-	static bool is_first_call = true;
+	
 	if (is_first_call)
 	{
 		is_first_call = false;
 		scheduler_init();
 	}
 
+	//lock();
 	int i;
 	int free_thread;
 	for (i = 1; i < MAX_THREADS; i++)
@@ -172,7 +363,7 @@ int pthread_create( // to ask: how do we modify registers? e.g., how do I get ar
 		}
 	}
 	free_thread = i;
-
+	printf("create\n");
 	// set up the stack and make it's head be pthread_exit
 	TCB[free_thread].thread_stack = malloc(THREAD_STACK_SIZE);
 	char *stack_ptr = TCB[free_thread].thread_stack;
@@ -191,9 +382,9 @@ int pthread_create( // to ask: how do we modify registers? e.g., how do I get ar
 
 
 	// set *thread
-	*thread = pthread_id_next;
+	*thread = free_thread;
 	TCB[thread_count].pthread_id = *thread;
-	pthread_id_next++;
+	//pthread_id_next++;
 	
 	// set status to ready
 	TCB[thread_count].status = TS_READY;
@@ -201,6 +392,7 @@ int pthread_create( // to ask: how do we modify registers? e.g., how do I get ar
 	thread_count++;
 	//printf("new thread created\n");
 	//schedule(1);
+	//unlock();
 	return 0;
 	/* TODO: Return 0 on successful thread creation, non-zero for an error.
 	 *       Be sure to set *thread on success.
@@ -256,20 +448,26 @@ void pthread_exit(void *value_ptr) // don't necessarily need to free the stack, 
 	 */
 
 	// status update
+	lock();
 	TCB[current_thread].status = TS_EXITED;
 
 	// free the stack
-	free(TCB[current_thread].thread_stack);
+	//free(TCB[current_thread].thread_stack);
 
 	// update number of active threads
 	thread_count--;
 	//printf("current thread %d exited\n", current_thread);
 	// call scheduler if threads remain
+	
 	if (thread_count > 0)
 	{ 
 		schedule(1);
+		unlock();
 	}
-	else exit(0);
+	else 
+	{
+		exit(0);
+	}
 
 	__builtin_unreachable();
 }

@@ -21,3 +21,17 @@ Resources used:
 4. stackoverflow.com and online man pages for general C questions and conceptual issues with the scheduler.
 
 5. Office hours: Daniel and Ryan were particularly helpful for me with this assignment
+
+
+
+
+###############################################################################################
+
+This is the README for EC440 Spring 2021 HW3
+
+I ran into a lot of issues with this homework. It seemed that the autograder test cases were not behaving
+the way they should've considering how the test cases that I used to develop my solution behaved. Still to do: make sure mutex-protected data can be accessed in a round-robin fashion, ensure any time a thread tries to lock an already locked mutex it gets blocked, ensure that destroyed barriers can be re-initialized and re-used, and ensure that barriers reset when they exit. 
+
+The purpose of this homework was to build on the threading library implemented in homework 2 to add thread synchronization capability using mutexes and barriers. To do this I implemented create and init functions for both mutexes and barriers, a wait function for barriers, and lock/unlock functions for mutexes. I believe that my issues are coming from the mutex lock/unlock functions and the scheduler being blocked or unblocked at the wrong moments.
+
+No external resources were used for this homework. Only the assignment sheet and man pages.
